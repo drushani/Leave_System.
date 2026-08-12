@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>請假申請系統</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#FBFAF5; --paper-dim:#F2F0E7; --ink:#1E2A38; --ink-soft:#5B6472;
+    --line:#D8D2C0; --brand:#2F5D62; --brand-dark:#204346;
+    --stamp-approve:#3F7D4E; --stamp-pending:#C98A2C; --stamp-reject:#A63D40; --white:#FFFFFF;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0; background:var(--paper); color:var(--ink); font-family:'IBM Plex Sans', sans-serif; min-height:100vh;}
+  .brandmark{font-family:'Fraunces', serif; font-weight:700; letter-spacing:0.02em;}
+  .auth-wrap{min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px;}
+  .auth-card{width:100%; max-width:420px; background:var(--white); border:1px solid var(--line); border-radius:2px; padding:40px 36px; box-shadow:0 1px 2px rgba(30,42,56,0.04), 0 8px 24px rgba(30,42,56,0.06); position:relative;}
+  .auth-card::before{content:""; position:absolute; top:0;left:0;right:0; height:4px; background:var(--brand);}
+  .form-title{font-family:'Fraunces', serif; font-size:26px; font-weight:600; margin:0 0 4px;}
+  .form-sub{color:var(--ink-soft); font-size:13.5px; margin:0 0 28px;}
+  label{display:block; font-size:12.5px; font-weight:500; color:var(--ink-soft); margin-bottom:6px; letter-spacing:0.02em;}
+  .field{margin-bottom:16px;}
+  input, select, textarea{width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:2px; background:var(--paper); font-family:'IBM Plex Sans', sans-serif; font-size:14px; color:var(--ink);}
+  input:focus, select:focus, textarea:focus{outline:none; border-color:var(--brand); box-shadow:0 0 0 3px rgba(47,93,98,0.12);}
+  .btn{width:100%; padding:11px 16px; border:none; border-radius:2px; background:var(--brand); color:var(--white); font-size:14.5px; font-weight:600; cursor:pointer; font-family:'IBM Plex Sans', sans-serif;}
+  .btn:hover{background:var(--brand-dark);}
+  .btn:disabled{opacity:0.6; cursor:not-allowed;}
+  .btn-ghost{background:transparent; color:var(--brand); border:1px solid var(--line);}
+  .btn-ghost:hover{background:var(--paper-dim);}
+  .btn-small{width:auto; padding:7px 14px; font-size:13px;}
+  .switch-row{margin-top:20px; text-align:center; font-size:13.5px; color:var(--ink-soft);}
+  .link{color:var(--brand); cursor:pointer; font-weight:600; text-decoration:underline;}
+  .error-box{background:#FBEAEA; border:1px solid #E3B4B4; color:var(--stamp-reject); font-size:13px; padding:9px 12px; border-radius:2px; margin-bottom:16px;}
+  .success-box{background:#EAF4EC; border:1px solid #B7D9BE; color:var(--stamp-approve); font-size:13px; padding:9px 12px; border-radius:2px; margin-bottom:16px;}
+  .hint{font-size:11.5px; color:var(--ink-soft); margin-top:24px; border-top:1px solid var(--line); padding-top:14px; line-height:1.5;}
+  .topbar{display:flex; align-items:center; justify-content:space-between; padding:16px 28px; background:var(--white); border-bottom:1px solid var(--line);}
+  .topbar-user{display:flex; align-items:center; gap:12px; font-size:13.5px; color:var(--ink-soft);}
+  .role-pill{font-size:11px; padding:2px 8px; border-radius:20px; background:var(--paper-dim); border:1px solid var(--line); font-family:'IBM Plex Mono', monospace;}
+  .shell{display:flex; min-height:calc(100vh - 61px);}
+  .sidebar{width:200px; flex-shrink:0; background:var(--white); border-right:1px solid var(--line); padding:20px 0;}
+  .nav-item{padding:11px 24px; font-size:14px; color:var(--ink-soft); cursor:pointer; border-left:3px solid transparent;}
+  .nav-item:hover{background:var(--paper-dim); color:var(--ink);}
+  .nav-item.active{color:var(--brand); font-weight:600; border-left-color:var(--brand); background:var(--paper-dim);}
+  .main{flex:1; padding:32px 40px; max-width:920px;}
+  .page-title{font-family:'Fraunces', serif; font-size:24px; font-weight:600; margin:0 0 6px;}
+  .page-sub{color:var(--ink-soft); font-size:13.5px; margin:0 0 28px;}
+  .panel{background:var(--white); border:1px solid var(--line); border-radius:2px; padding:28px; max-width:560px;}
+  .row2{display:grid; grid-template-columns:1fr 1fr; gap:16px;}
+  .days-note{font-size:12.5px; color:var(--brand); font-family:'IBM Plex Mono', monospace; margin-top:-8px; margin-bottom:16px;}
+  .ledger-card{background:var(--white); border:1px solid var(--line); border-radius:2px; padding:20px 22px; margin-bottom:14px;}
+  .ledger-top{display:flex; justify-content:space-between; align-items:flex-start; gap:16px;}
+  .ledger-type{font-family:'Fraunces', serif; font-size:17px; font-weight:600; margin:0 0 4px;}
+  .ledger-meta{font-size:12.5px; color:var(--ink-soft); font-family:'IBM Plex Mono', monospace;}
+  .ledger-reason{font-size:13.5px; color:var(--ink); margin-top:10px; line-height:1.5;}
+  .ledger-applicant{font-size:12px; color:var(--ink-soft); margin-top:4px;}
+  .stamp{font-family:'IBM Plex Mono', monospace; font-size:11.5px; font-weight:600; letter-spacing:0.08em; padding:6px 10px; border:2px dashed currentColor; border-radius:6px; transform:rotate(-6deg); white-space:nowrap; flex-shrink:0;}
+  .stamp-pending{color:var(--stamp-pending);} .stamp-approved{color:var(--stamp-approve);} .stamp-rejected{color:var(--stamp-reject);}
+  .review-actions{display:flex; gap:10px; margin-top:14px;}
+  .btn-approve{background:var(--stamp-approve);} .btn-approve:hover{background:#356a42;}
+  .btn-reject{background:var(--stamp-reject);} .btn-reject:hover{background:#8a3235;}
+  .empty-state{text-align:center; padding:60px 20px; color:var(--ink-soft);}
+  .empty-state .brandmark{display:block; font-size:20px; margin-bottom:6px; color:var(--ink);}
+  .loading{padding:40px; text-align:center; color:var(--ink-soft); font-size:13.5px;}
+  .filter-tabs{display:flex; gap:8px; margin-bottom:20px;}
+  .filter-tab{padding:6px 14px; font-size:12.5px; border:1px solid var(--line); border-radius:20px; cursor:pointer; color:var(--ink-soft); background:var(--white);}
+  .filter-tab.active{background:var(--brand); color:var(--white); border-color:var(--brand);}
+  @media (max-width:720px){
+    .shell{flex-direction:column;} .sidebar{width:100%; display:flex; padding:8px; overflow-x:auto;}
+    .nav-item{border-left:none; border-bottom:3px solid transparent; white-space:nowrap;}
+    .nav-item.active{border-left:none; border-bottom-color:var(--brand);}
+    .main{padding:20px;} .row2{grid-template-columns:1fr;}
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+(function(){
+  "use strict";
+
+  async function api(path, options){
+    const res = await fetch(path, Object.assign({
+      headers: {"Content-Type":"application/json"},
+      credentials: "same-origin"
+    }, options));
+    let data = {};
+    try{ data = await res.json(); }catch(e){}
+    if(!res.ok) throw new Error(data.error || "發生未知錯誤");
+    return data;
+  }
+
+  let state = { view:"login", currentUser:null, tab:"submit", error:"", notice:"", filter:"all" };
+  const app = document.getElementById("app");
+
+  function setState(patch){ state = Object.assign({}, state, patch); render(); }
+  function escapeHtml(str){
+    return String(str).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  }
+  function daysBetween(start,end){
+    if(!start || !end) return 0;
+    const d = Math.round((new Date(end) - new Date(start)) / 86400000) + 1;
+    return d > 0 ? d : 0;
+  }
+
+  const LEAVE_TYPES = ["年假","病假","事假","婚假","喪假","其他"];
+  const STATUS_LABEL = { pending:"待審核", approved:"已核准", rejected:"已拒絕" };
+  const RANK = { employee:1, deputy_manager:2, manager:3, general_manager:4, admin:5 };
+  const ROLE_LABEL = { employee:"員工", deputy_manager:"副經理/副廠長", manager:"經理/廠長", general_manager:"總經理", admin:"管理員" };
+
+  function renderLogin(){
+    app.innerHTML = `
+      <div class="auth-wrap"><div class="auth-card">
+        <div class="brandmark form-title">請假申請系統</div>
+        <p class="form-sub">登入你的帳號以提交或審核請假申請</p>
+        ${state.error ? `<div class="error-box">${escapeHtml(state.error)}</div>` : ""}
+        <form id="login-form">
+          <div class="field"><label>帳號</label><input type="text" id="login-username" autocomplete="username" required></div>
+          <div class="field"><label>密碼</label><input type="password" id="login-password" autocomplete="current-password" required></div>
+          <button class="btn" type="submit" id="login-btn">登入</button>
+        </form>
+        <div class="hint">帳號密碼會以雜湊方式儲存在你自己架設的資料庫中。如需帳號，請洽系統管理員建立。</div>
+      </div></div>`;
+    document.getElementById("login-form").onsubmit = async (e) => {
+      e.preventDefault();
+      const username = document.getElementById("login-username").value.trim();
+      const password = document.getElementById("login-password").value;
+      const btn = document.getElementById("login-btn");
+      btn.disabled = true; btn.textContent = "登入中…";
+      try{
+        const { user } = await api("/api/login", { method:"POST", body: JSON.stringify({username,password}) });
+        setState({view:"app", currentUser:user, error:"", tab:"submit"});
+      }catch(err){ setState({error: err.message}); }
+    };
+  }
+
+  function renderShell(bodyHtml){
+    const u = state.currentUser;
+    const isReviewer = RANK[u.role] >= RANK.deputy_manager;
+    app.innerHTML = `
+      <div class="topbar">
+        <div class="brandmark">請假申請系統</div>
+        <div class="topbar-user">
+          <span>${escapeHtml(u.name)}</span>
+          <span class="role-pill">${escapeHtml(ROLE_LABEL[u.role] || u.role)}</span>
+          <button class="btn btn-ghost btn-small" id="logout-btn">登出</button>
+        </div>
+      </div>
+      <div class="shell">
+        <div class="sidebar">
+          <div class="nav-item ${state.tab==='submit'?'active':''}" data-tab="submit">提交請假</div>
+          <div class="nav-item ${state.tab==='mine'?'active':''}" data-tab="mine">我的紀錄</div>
+          ${isReviewer ? `<div class="nav-item ${state.tab==='review'?'active':''}" data-tab="review">審核請假</div>` : ""}
+          ${u.role === 'admin' ? `<div class="nav-item ${state.tab==='admin'?'active':''}" data-tab="admin">帳號管理</div>` : ""}
+        </div>
+        <div class="main">${bodyHtml}</div>
+      </div>`;
+    document.getElementById("logout-btn").onclick = async () => {
+      await api("/api/logout", { method:"POST" });
+      setState({view:"login", currentUser:null, error:""});
+    };
+    document.querySelectorAll(".nav-item").forEach(el=>{
+      el.onclick = () => setState({tab: el.dataset.tab, error:"", notice:""});
+    });
+  }
+
+  function renderSubmitTab(){
+    const bodyHtml = `
+      <h1 class="page-title">提交請假申請</h1>
+      <p class="page-sub">填寫以下表單送出你的請假申請，送出後將進入待審核狀態。</p>
+      ${state.error ? `<div class="error-box">${escapeHtml(state.error)}</div>` : ""}
+      ${state.notice ? `<div class="success-box">${escapeHtml(state.notice)}</div>` : ""}
+      <div class="panel">
+        <form id="leave-form">
+          <div class="field"><label>假別</label>
+            <select id="leave-type">${LEAVE_TYPES.map(t=>`<option value="${t}">${t}</option>`).join("")}</select>
+          </div>
+          <div class="row2">
+            <div class="field"><label>開始日期</label><input type="date" id="leave-start" required></div>
+            <div class="field"><label>結束日期</label><input type="date" id="leave-end" required></div>
+          </div>
+          <div class="days-note" id="days-note"></div>
+          <div class="field"><label>請假原因</label><textarea id="leave-reason" rows="3" required></textarea></div>
+          <button class="btn" type="submit" id="submit-leave-btn">送出申請</button>
+        </form>
+      </div>`;
+    renderShell(bodyHtml);
+    const startEl = document.getElementById("leave-start");
+    const endEl = document.getElementById("leave-end");
+    function updateDaysNote(){
+      const d = daysBetween(startEl.value, endEl.value);
+      document.getElementById("days-note").textContent = d > 0 ? `共計 ${d} 天` : "";
+    }
+    startEl.onchange = updateDaysNote; endEl.onchange = updateDaysNote;
+
+    document.getElementById("leave-form").onsubmit = async (e) => {
+      e.preventDefault();
+      const type = document.getElementById("leave-type").value;
+      const start = startEl.value, end = endEl.value;
+      const reason = document.getElementById("leave-reason").value.trim();
+      const btn = document.getElementById("submit-leave-btn");
+      btn.disabled = true; btn.textContent = "送出中…";
+      try{
+        await api("/api/leaves", { method:"POST", body: JSON.stringify({type,start,end,reason}) });
+        setState({error:"", notice:"已送出申請，等待審核", tab:"submit"});
+      }catch(err){ setState({error: err.message, notice:""}); }
+    };
+  }
+
+  function statusStampHtml(status){
+    const cls = status === "approved" ? "stamp-approved" : status === "rejected" ? "stamp-rejected" : "stamp-pending";
+    return `<span class="stamp ${cls}">${STATUS_LABEL[status]}</span>`;
+  }
+
+  function leaveCardHtml(lv, opts){
+    opts = opts || {};
+    const isOwn = opts.currentUsername && lv.username === opts.currentUsername;
+    return `
+      <div class="ledger-card">
+        <div class="ledger-top">
+          <div>
+            <div class="ledger-type">${escapeHtml(lv.type)}</div>
+            <div class="ledger-meta">${lv.start_date} → ${lv.end_date}（${daysBetween(lv.start_date,lv.end_date)} 天）</div>
+            ${opts.showApplicant ? `<div class="ledger-applicant">申請人：${escapeHtml(lv.name)}（${escapeHtml(lv.username)}）${lv.requester_role ? ` · ${escapeHtml(ROLE_LABEL[lv.requester_role] || lv.requester_role)}` : ""}</div>` : ""}
+          </div>
+          ${statusStampHtml(lv.status)}
+        </div>
+        <div class="ledger-reason">${escapeHtml(lv.reason)}</div>
+        ${opts.reviewActions && !isOwn ? `
+          <div class="review-actions">
+            <button class="btn btn-small btn-approve" data-id="${lv.id}" data-action="approved">核准</button>
+            <button class="btn btn-small btn-reject" data-id="${lv.id}" data-action="rejected">拒絕</button>
+          </div>` : ""}
+        ${opts.reviewActions && isOwn ? `<div class="ledger-applicant" style="margin-top:10px;">這是你自己的申請，無法自行審核，需交由其他主管處理</div>` : ""}
+      </div>`;
+  }
+
+  async function renderMineTab(){
+    renderShell(`<div class="loading">載入中…</div>`);
+    try{
+      const { leaves } = await api("/api/leaves/mine");
+      const filtered = state.filter === "all" ? leaves : leaves.filter(l=>l.status===state.filter);
+      const listHtml = filtered.length ? filtered.map(l=>leaveCardHtml(l,{})).join("")
+        : `<div class="empty-state"><span class="brandmark">目前沒有紀錄</span>還沒有符合條件的請假申請</div>`;
+      renderShell(`
+        <h1 class="page-title">我的請假紀錄</h1>
+        <p class="page-sub">查看你所有的請假申請與目前狀態。</p>
+        <div class="filter-tabs">
+          ${["all","pending","approved","rejected"].map(f=>`<div class="filter-tab ${state.filter===f?'active':''}" data-f="${f}">${f==='all'?'全部':STATUS_LABEL[f]}</div>`).join("")}
+        </div>
+        ${listHtml}`);
+      document.querySelectorAll(".filter-tab").forEach(el=> el.onclick = () => setState({filter: el.dataset.f}));
+    }catch(err){ renderShell(`<div class="error-box">${escapeHtml(err.message)}</div>`); }
+  }
+
+  async function renderReviewTab(){
+    renderShell(`<div class="loading">載入中…</div>`);
+    try{
+      const { leaves } = await api("/api/leaves/all");
+      const filtered = state.filter === "all" ? leaves : leaves.filter(l=>l.status===state.filter);
+      const listHtml = filtered.length
+        ? filtered.map(l=>leaveCardHtml(l,{showApplicant:true, reviewActions: l.status==='pending', currentUsername: state.currentUser.username})).join("")
+        : `<div class="empty-state"><span class="brandmark">目前沒有紀錄</span>還沒有符合條件的請假申請</div>`;
+      renderShell(`
+        <h1 class="page-title">審核請假申請</h1>
+        <p class="page-sub">檢視所有同事的請假申請並進行核准或拒絕。</p>
+        ${state.error ? `<div class="error-box">${escapeHtml(state.error)}</div>` : ""}
+        <div class="filter-tabs">
+          ${["all","pending","approved","rejected"].map(f=>`<div class="filter-tab ${state.filter===f?'active':''}" data-f="${f}">${f==='all'?'全部':STATUS_LABEL[f]}</div>`).join("")}
+        </div>
+        ${listHtml}`);
+      document.querySelectorAll(".filter-tab").forEach(el=> el.onclick = () => setState({filter: el.dataset.f}));
+      document.querySelectorAll("[data-action]").forEach(btn=>{
+        btn.onclick = async () => {
+          btn.disabled = true;
+          try{
+            await api(`/api/leaves/${btn.dataset.id}/review`, { method:"POST", body: JSON.stringify({action: btn.dataset.action}) });
+            renderReviewTab();
+          }catch(err){ setState({error: err.message}); }
+        };
+      });
+    }catch(err){ renderShell(`<div class="error-box">${escapeHtml(err.message)}</div>`); }
+  }
+
+  const ROLE_OPTIONS = [
+    ["employee","員工"],["deputy_manager","副經理/副廠長"],["manager","經理/廠長"],
+    ["general_manager","總經理"],["admin","管理員"]
+  ];
+
+  async function renderAdminTab(){
+    renderShell(`<div class="loading">載入中…</div>`);
+    let users = [];
+    try{
+      ({ users } = await api("/api/admin/users"));
+    }catch(err){ renderShell(`<div class="error-box">${escapeHtml(err.message)}</div>`); return; }
+
+    const rowsHtml = users.map(u => `
+      <div class="ledger-card">
+        <div class="ledger-top">
+          <div>
+            <div class="ledger-type">${escapeHtml(u.name)}（${escapeHtml(u.username)}）</div>
+            <div class="ledger-meta">建立於 ${escapeHtml(u.created_at)}</div>
+          </div>
+          <span class="role-pill">${escapeHtml(ROLE_LABEL[u.role] || u.role)}</span>
+        </div>
+      </div>`).join("");
+
+    renderShell(`
+      <h1 class="page-title">帳號管理</h1>
+      <p class="page-sub">只有管理員可以建立新帳號，一般人無法自行註冊。</p>
+      ${state.error ? `<div class="error-box">${escapeHtml(state.error)}</div>` : ""}
+      ${state.notice ? `<div class="success-box">${escapeHtml(state.notice)}</div>` : ""}
+      <div class="panel">
+        <form id="new-user-form">
+          <div class="field"><label>姓名</label><input type="text" id="nu-name" required></div>
+          <div class="field"><label>帳號</label><input type="text" id="nu-username" required></div>
+          <div class="field"><label>密碼</label><input type="password" id="nu-password" required minlength="4"></div>
+          <div class="field"><label>身份</label>
+            <select id="nu-role">${ROLE_OPTIONS.map(([v,l])=>`<option value="${v}">${l}</option>`).join("")}</select>
+          </div>
+          <button class="btn" type="submit" id="nu-btn">建立帳號</button>
+        </form>
+      </div>
+      <h2 class="page-title" style="font-size:16px; margin-top:28px;">現有帳號（${users.length}）</h2>
+      ${rowsHtml || `<div class="empty-state"><span class="brandmark">尚無帳號</span></div>`}
+    `);
+
+    document.getElementById("new-user-form").onsubmit = async (e) => {
+      e.preventDefault();
+      const name = document.getElementById("nu-name").value.trim();
+      const username = document.getElementById("nu-username").value.trim();
+      const password = document.getElementById("nu-password").value;
+      const role = document.getElementById("nu-role").value;
+      const btn = document.getElementById("nu-btn");
+      btn.disabled = true; btn.textContent = "建立中…";
+      try{
+        await api("/api/admin/users", { method:"POST", body: JSON.stringify({username,password,name,role}) });
+        setState({error:"", notice:`已建立帳號 "${username}"`, tab:"admin"});
+      }catch(err){ setState({error: err.message, notice:""}); }
+    };
+  }
+
+  function render(){
+    if(state.view === "login") return renderLogin();
+    if(state.view === "app"){
+      if(state.tab === "submit") return renderSubmitTab();
+      if(state.tab === "mine") return renderMineTab();
+      if(state.tab === "review") return renderReviewTab();
+      if(state.tab === "admin") return renderAdminTab();
+    }
+  }
+
+  // check for an existing session on load (e.g. page refresh)
+  (async function init(){
+    try{
+      const { user } = await api("/api/me");
+      if(user){ state.view = "app"; state.currentUser = user; }
+    }catch(e){}
+    render();
+  })();
+})();
+</script>
+</body>
+</html>

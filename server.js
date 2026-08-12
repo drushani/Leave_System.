@@ -60,9 +60,19 @@ function requireReviewer(req, res, next) {
   next();
 }
 
+// Only admin accounts can create or manage other accounts.
+function requireAdmin(req, res, next) {
+  if (!req.session.user || req.session.user.role !== "admin") {
+    return res.status(403).json({ error: "只有管理員可以執行這個操作" });
+  }
+  next();
+}
+
 // ---------- auth routes ----------
 
-app.post("/api/register", (req, res) => {
+// Account creation is admin-only now — there is no public self-registration route.
+// (Use scripts/create-admin.js once to bootstrap the first admin account.)
+app.post("/api/admin/users", requireAuth, requireAdmin, (req, res) => {
   const { username, password, name, role } = req.body || {};
   if (!username || !password || !name) {
     return res.status(400).json({ error: "請填寫所有欄位" });
@@ -70,20 +80,29 @@ app.post("/api/register", (req, res) => {
   if (password.length < 4) {
     return res.status(400).json({ error: "密碼至少需要 4 個字元" });
   }
-  const safeRole = VALID_ROLES.includes(role) ? role : "employee";
+  if (!VALID_ROLES.includes(role)) {
+    return res.status(400).json({ error: "身份不正確" });
+  }
 
   const existing = db.prepare("SELECT username FROM users WHERE username = ?").get(username);
   if (existing) {
-    return res.status(409).json({ error: "這個帳號已經被註冊了" });
+    return res.status(409).json({ error: "這個帳號已經存在了" });
   }
 
   const passwordHash = bcrypt.hashSync(password, 10);
   db.prepare(
     "INSERT INTO users (username, name, password_hash, role) VALUES (?, ?, ?, ?)"
-  ).run(username, name, passwordHash, safeRole);
+  ).run(username, name, passwordHash, role);
 
-  req.session.user = { username, name, role: safeRole };
-  res.json({ user: req.session.user });
+  res.json({ ok: true, user: { username, name, role } });
+});
+
+// List existing accounts (admin only) so the admin panel can show who already has access.
+app.get("/api/admin/users", requireAuth, requireAdmin, (req, res) => {
+  const rows = db
+    .prepare("SELECT username, name, role, created_at FROM users ORDER BY created_at DESC")
+    .all();
+  res.json({ users: rows });
 });
 
 app.post("/api/login", (req, res) => {
