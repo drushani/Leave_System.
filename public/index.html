@@ -120,10 +120,8 @@
           <div class="field"><label>密碼</label><input type="password" id="login-password" autocomplete="current-password" required></div>
           <button class="btn" type="submit" id="login-btn">登入</button>
         </form>
-        <div class="switch-row">還沒有帳號嗎？ <span class="link" id="go-register">建立新帳號</span></div>
-        <div class="hint">帳號密碼會以雜湊方式儲存在你自己架設的資料庫中。</div>
+        <div class="hint">帳號密碼會以雜湊方式儲存在你自己架設的資料庫中。如需帳號，請洽系統管理員建立。</div>
       </div></div>`;
-    document.getElementById("go-register").onclick = () => setState({view:"register", error:""});
     document.getElementById("login-form").onsubmit = async (e) => {
       e.preventDefault();
       const username = document.getElementById("login-username").value.trim();
@@ -132,46 +130,6 @@
       btn.disabled = true; btn.textContent = "登入中…";
       try{
         const { user } = await api("/api/login", { method:"POST", body: JSON.stringify({username,password}) });
-        setState({view:"app", currentUser:user, error:"", tab:"submit"});
-      }catch(err){ setState({error: err.message}); }
-    };
-  }
-
-  function renderRegister(){
-    app.innerHTML = `
-      <div class="auth-wrap"><div class="auth-card">
-        <div class="brandmark form-title">建立新帳號</div>
-        <p class="form-sub">填寫以下資訊完成註冊</p>
-        ${state.error ? `<div class="error-box">${escapeHtml(state.error)}</div>` : ""}
-        <form id="reg-form">
-          <div class="field"><label>姓名</label><input type="text" id="reg-name" required></div>
-          <div class="field"><label>帳號</label><input type="text" id="reg-username" required></div>
-          <div class="field"><label>密碼</label><input type="password" id="reg-password" required minlength="4"></div>
-          <div class="field"><label>身份</label>
-            <select id="reg-role">
-              <option value="employee">員工</option>
-              <option value="deputy_manager">副經理/副廠長</option>
-              <option value="manager">經理/廠長</option>
-              <option value="general_manager">總經理</option>
-              <option value="admin">管理員</option>
-            </select>
-          </div>
-          <button class="btn" type="submit" id="reg-btn">建立帳號</button>
-        </form>
-        <div class="switch-row">已經有帳號？ <span class="link" id="go-login">回到登入</span></div>
-        <div class="hint">示範系統可自由選擇任何身份，正式系統中此權限應由後台指派，不應讓使用者自己選。</div>
-      </div></div>`;
-    document.getElementById("go-login").onclick = () => setState({view:"login", error:""});
-    document.getElementById("reg-form").onsubmit = async (e) => {
-      e.preventDefault();
-      const name = document.getElementById("reg-name").value.trim();
-      const username = document.getElementById("reg-username").value.trim();
-      const password = document.getElementById("reg-password").value;
-      const role = document.getElementById("reg-role").value;
-      const btn = document.getElementById("reg-btn");
-      btn.disabled = true; btn.textContent = "建立中…";
-      try{
-        const { user } = await api("/api/register", { method:"POST", body: JSON.stringify({username,password,name,role}) });
         setState({view:"app", currentUser:user, error:"", tab:"submit"});
       }catch(err){ setState({error: err.message}); }
     };
@@ -194,6 +152,7 @@
           <div class="nav-item ${state.tab==='submit'?'active':''}" data-tab="submit">提交請假</div>
           <div class="nav-item ${state.tab==='mine'?'active':''}" data-tab="mine">我的紀錄</div>
           ${isReviewer ? `<div class="nav-item ${state.tab==='review'?'active':''}" data-tab="review">審核請假</div>` : ""}
+          ${u.role === 'admin' ? `<div class="nav-item ${state.tab==='admin'?'active':''}" data-tab="admin">帳號管理</div>` : ""}
         </div>
         <div class="main">${bodyHtml}</div>
       </div>`;
@@ -324,13 +283,71 @@
     }catch(err){ renderShell(`<div class="error-box">${escapeHtml(err.message)}</div>`); }
   }
 
+  const ROLE_OPTIONS = [
+    ["employee","員工"],["deputy_manager","副經理/副廠長"],["manager","經理/廠長"],
+    ["general_manager","總經理"],["admin","管理員"]
+  ];
+
+  async function renderAdminTab(){
+    renderShell(`<div class="loading">載入中…</div>`);
+    let users = [];
+    try{
+      ({ users } = await api("/api/admin/users"));
+    }catch(err){ renderShell(`<div class="error-box">${escapeHtml(err.message)}</div>`); return; }
+
+    const rowsHtml = users.map(u => `
+      <div class="ledger-card">
+        <div class="ledger-top">
+          <div>
+            <div class="ledger-type">${escapeHtml(u.name)}（${escapeHtml(u.username)}）</div>
+            <div class="ledger-meta">建立於 ${escapeHtml(u.created_at)}</div>
+          </div>
+          <span class="role-pill">${escapeHtml(ROLE_LABEL[u.role] || u.role)}</span>
+        </div>
+      </div>`).join("");
+
+    renderShell(`
+      <h1 class="page-title">帳號管理</h1>
+      <p class="page-sub">只有管理員可以建立新帳號，一般人無法自行註冊。</p>
+      ${state.error ? `<div class="error-box">${escapeHtml(state.error)}</div>` : ""}
+      ${state.notice ? `<div class="success-box">${escapeHtml(state.notice)}</div>` : ""}
+      <div class="panel">
+        <form id="new-user-form">
+          <div class="field"><label>姓名</label><input type="text" id="nu-name" required></div>
+          <div class="field"><label>帳號</label><input type="text" id="nu-username" required></div>
+          <div class="field"><label>密碼</label><input type="password" id="nu-password" required minlength="4"></div>
+          <div class="field"><label>身份</label>
+            <select id="nu-role">${ROLE_OPTIONS.map(([v,l])=>`<option value="${v}">${l}</option>`).join("")}</select>
+          </div>
+          <button class="btn" type="submit" id="nu-btn">建立帳號</button>
+        </form>
+      </div>
+      <h2 class="page-title" style="font-size:16px; margin-top:28px;">現有帳號（${users.length}）</h2>
+      ${rowsHtml || `<div class="empty-state"><span class="brandmark">尚無帳號</span></div>`}
+    `);
+
+    document.getElementById("new-user-form").onsubmit = async (e) => {
+      e.preventDefault();
+      const name = document.getElementById("nu-name").value.trim();
+      const username = document.getElementById("nu-username").value.trim();
+      const password = document.getElementById("nu-password").value;
+      const role = document.getElementById("nu-role").value;
+      const btn = document.getElementById("nu-btn");
+      btn.disabled = true; btn.textContent = "建立中…";
+      try{
+        await api("/api/admin/users", { method:"POST", body: JSON.stringify({username,password,name,role}) });
+        setState({error:"", notice:`已建立帳號 "${username}"`, tab:"admin"});
+      }catch(err){ setState({error: err.message, notice:""}); }
+    };
+  }
+
   function render(){
     if(state.view === "login") return renderLogin();
-    if(state.view === "register") return renderRegister();
     if(state.view === "app"){
       if(state.tab === "submit") return renderSubmitTab();
       if(state.tab === "mine") return renderMineTab();
       if(state.tab === "review") return renderReviewTab();
+      if(state.tab === "admin") return renderAdminTab();
     }
   }
 
