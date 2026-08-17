@@ -1,3 +1,13 @@
+<!--20260817: formatDuration(start, end)： 計算並回傳X天Y小時文字-->
+<!--20260817: formatDateTime(dt)：把 2026-08-20T09:00 格式轉成 2026/08/20 09:00-->
+<!--20260817: 表單欄位，把 type="date" 改成 type="datetime-local"-->
+<!--20260817: 每次使用者「改動」開始時間或結束時間的選擇器，就會觸發一次 updateDaysNote()-->
+<!--20260817: 請假紀錄卡片上顯示的日期時間，改用 formatDateTime() 和 formatDuration()-->
+<!--20260817: 表單加了「附件」的檔案選擇欄位-->
+<!--20260817: 新增偵測格式為何，以防檔案解析錯誤造成檔案損壞-->
+<!--20260817: 新增FormData()，這種容器文字跟檔案都能裝-->
+<!--20260817: 請假紀錄卡片上，有附件的話會顯示一個「*檔名」的下載連結-->
+
 <!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
@@ -66,6 +76,16 @@
   .filter-tabs{display:flex; gap:8px; margin-bottom:20px;}
   .filter-tab{padding:6px 14px; font-size:12.5px; border:1px solid var(--line); border-radius:20px; cursor:pointer; color:var(--ink-soft); background:var(--white);}
   .filter-tab.active{background:var(--brand); color:var(--white); border-color:var(--brand);}
+  .toolbar{display:flex; align-items:center; gap:14px; margin-bottom:18px; flex-wrap:wrap;}
+  .toolbar label{margin:0; white-space:nowrap;}
+  .toolbar select, .toolbar input[type=date]{width:auto;}
+  .review-table{width:100%; border-collapse:collapse; background:var(--white); border:1px solid var(--line); font-size:13px;}
+  .review-table th, .review-table td{padding:10px 12px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top;}
+  .review-table th{background:var(--paper-dim); font-weight:600; color:var(--ink-soft); font-size:12px;}
+  .review-table tr:last-child td{border-bottom:none;}
+  .review-table .row-actions{display:flex; gap:8px;}
+  .summary-note{font-size:13px; color:var(--ink-soft); margin-bottom:14px;}
+  .summary-note b{color:var(--ink); font-family:'IBM Plex Mono', monospace;}
   @media (max-width:720px){
     .shell{flex-direction:column;} .sidebar{width:100%; display:flex; padding:8px; overflow-x:auto;}
     .nav-item{border-left:none; border-bottom:3px solid transparent; white-space:nowrap;}
@@ -81,8 +101,12 @@
   "use strict";
 
   async function api(path, options){
+    options = options || {};
+    // 如果 body 是 FormData（例如包含檔案），不能手動設定 Content-Type，
+    // 瀏覽器需要自己加上 multipart/form-data 的 boundary 才會正確送出。
+    const isFormData = options.body instanceof FormData;
     const res = await fetch(path, Object.assign({
-      headers: {"Content-Type":"application/json"},
+      headers: isFormData ? {} : {"Content-Type":"application/json"},
       credentials: "same-origin"
     }, options));
     let data = {};
@@ -98,16 +122,33 @@
   function escapeHtml(str){
     return String(str).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   }
-  function daysBetween(start,end){
-    if(!start || !end) return 0;
-    const d = Math.round((new Date(end) - new Date(start)) / 86400000) + 1;
-    return d > 0 ? d : 0;
+  // 計算開始～結束之間總共多少小時，並格式化成「X 天 Y 小時」或「Y 小時」的文字
+  function formatDuration(start,end){
+    if(!start || !end) return "";
+    const ms = new Date(end) - new Date(start);
+    if(!(ms > 0)) return "";
+    const totalHours = Math.round(ms / 3600000 * 10) / 10; // 四捨五入到小數第一位
+    const days = Math.floor(totalHours / 24);
+    const hours = Math.round((totalHours - days * 24) * 10) / 10;
+    if(days > 0 && hours > 0) return `${days} 天 ${hours} 小時`;
+    if(days > 0) return `${days} 天`;
+    return `${hours} 小時`;
+  }
+  // 把 "2026-08-20T09:00" 這種格式轉成 "2026/08/20 09:00" 方便閱讀
+  function formatDateTime(dt){
+    if(!dt) return "";
+    const d = new Date(dt);
+    if(isNaN(d)) return dt;
+    const pad = n => String(n).padStart(2,"0");
+    return `${d.getFullYear()}/${pad(d.getMonth()+1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 
-  const LEAVE_TYPES = ["年假","病假","事假","婚假","喪假","其他"];
+  const LEAVE_TYPES = ["特休","病假","事假","婚假","喪假","其他"];
   const STATUS_LABEL = { pending:"待審核", approved:"已核准", rejected:"已拒絕" };
-  const RANK = { employee:1, deputy_manager:2, manager:3, general_manager:4, admin:5 };
-  const ROLE_LABEL = { employee:"員工", deputy_manager:"副經理/副廠長", manager:"經理/廠長", general_manager:"總經理", admin:"管理員" };
+  const RANK = { employee:1, section_chief:2, deputy_manager:3, manager:4, general_manager:5, admin:6 };
+  const ROLE_LABEL = { employee:"員工", section_chief:"課長", deputy_manager:"副經理/副廠長", manager:"經理/廠長", general_manager:"總經理", admin:"管理員" };
+  const COMPANY_WIDE_ROLES = ["general_manager","admin"];
+  let DEPARTMENTS = [];
 
   function renderLogin(){
     app.innerHTML = `
@@ -137,13 +178,13 @@
 
   function renderShell(bodyHtml){
     const u = state.currentUser;
-    const isReviewer = RANK[u.role] >= RANK.deputy_manager;
+    const isReviewer = RANK[u.role] >= RANK.section_chief;
     app.innerHTML = `
       <div class="topbar">
         <div class="brandmark">請假申請系統</div>
         <div class="topbar-user">
           <span>${escapeHtml(u.name)}</span>
-          <span class="role-pill">${escapeHtml(ROLE_LABEL[u.role] || u.role)}</span>
+          <span class="role-pill">${escapeHtml(ROLE_LABEL[u.role] || u.role)}${u.department ? ` · ${escapeHtml(u.department)}` : ""}</span>
           <button class="btn btn-ghost btn-small" id="logout-btn">登出</button>
         </div>
       </div>
@@ -152,6 +193,7 @@
           <div class="nav-item ${state.tab==='submit'?'active':''}" data-tab="submit">提交請假</div>
           <div class="nav-item ${state.tab==='mine'?'active':''}" data-tab="mine">我的紀錄</div>
           ${isReviewer ? `<div class="nav-item ${state.tab==='review'?'active':''}" data-tab="review">審核請假</div>` : ""}
+          ${isReviewer ? `<div class="nav-item ${state.tab==='attendance'?'active':''}" data-tab="attendance">出勤查詢</div>` : ""}
           ${u.role === 'admin' ? `<div class="nav-item ${state.tab==='admin'?'active':''}" data-tab="admin">帳號管理</div>` : ""}
         </div>
         <div class="main">${bodyHtml}</div>
@@ -165,23 +207,29 @@
     });
   }
 
-  function renderSubmitTab(){
+  async function renderSubmitTab(){
+    let balance = null;
+    try{ balance = await api("/api/leaves/leave-balance"); }catch(e){}
+
     const bodyHtml = `
       <h1 class="page-title">提交請假申請</h1>
       <p class="page-sub">填寫以下表單送出你的請假申請，送出後將進入待審核狀態。</p>
       ${state.error ? `<div class="error-box">${escapeHtml(state.error)}</div>` : ""}
       ${state.notice ? `<div class="success-box">${escapeHtml(state.notice)}</div>` : ""}
+      ${balance && balance.hireDate ? `<div class="days-note" style="margin-bottom:16px;">特休額度（依到職日 ${escapeHtml(balance.hireDate)} 自動計算）：總共 ${balance.totalHours} 小時，已使用（含待審核）${balance.usedHours} 小時，剩餘 ${balance.remainingHours} 小時</div>` : ""}
+      ${balance && !balance.hireDate ? `<div class="days-note" style="margin-bottom:16px;">你的帳號尚未設定到職日，暫時無法計算特休額度，請聯繫管理員設定。</div>` : ""}
       <div class="panel">
         <form id="leave-form">
           <div class="field"><label>假別</label>
             <select id="leave-type">${LEAVE_TYPES.map(t=>`<option value="${t}">${t}</option>`).join("")}</select>
           </div>
           <div class="row2">
-            <div class="field"><label>開始日期</label><input type="date" id="leave-start" required></div>
-            <div class="field"><label>結束日期</label><input type="date" id="leave-end" required></div>
+            <div class="field"><label>開始時間</label><input type="datetime-local" id="leave-start" required></div>
+            <div class="field"><label>結束時間</label><input type="datetime-local" id="leave-end" required></div>
           </div>
           <div class="days-note" id="days-note"></div>
           <div class="field"><label>請假原因</label><textarea id="leave-reason" rows="3" required></textarea></div>
+          <div class="field"><label>附件（選填，例如診斷證明，限 PDF / Word / Excel / 圖片，10MB 以內）</label><input type="file" id="leave-attachment" accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png"></div>
           <button class="btn" type="submit" id="submit-leave-btn">送出申請</button>
         </form>
       </div>`;
@@ -189,8 +237,8 @@
     const startEl = document.getElementById("leave-start");
     const endEl = document.getElementById("leave-end");
     function updateDaysNote(){
-      const d = daysBetween(startEl.value, endEl.value);
-      document.getElementById("days-note").textContent = d > 0 ? `共計 ${d} 天` : "";
+      const text = formatDuration(startEl.value, endEl.value);
+      document.getElementById("days-note").textContent = text ? `共計 ${text}` : "";
     }
     startEl.onchange = updateDaysNote; endEl.onchange = updateDaysNote;
 
@@ -199,10 +247,17 @@
       const type = document.getElementById("leave-type").value;
       const start = startEl.value, end = endEl.value;
       const reason = document.getElementById("leave-reason").value.trim();
+      const attachmentFile = document.getElementById("leave-attachment").files[0];
       const btn = document.getElementById("submit-leave-btn");
       btn.disabled = true; btn.textContent = "送出中…";
       try{
-        await api("/api/leaves", { method:"POST", body: JSON.stringify({type,start,end,reason}) });
+        const formData = new FormData();
+        formData.append("type", type);
+        formData.append("start", start);
+        formData.append("end", end);
+        formData.append("reason", reason);
+        if(attachmentFile) formData.append("attachment", attachmentFile);
+        await api("/api/leaves", { method:"POST", body: formData });
         setState({error:"", notice:"已送出申請，等待審核", tab:"submit"});
       }catch(err){ setState({error: err.message, notice:""}); }
     };
@@ -221,8 +276,9 @@
         <div class="ledger-top">
           <div>
             <div class="ledger-type">${escapeHtml(lv.type)}</div>
-            <div class="ledger-meta">${lv.start_date} → ${lv.end_date}（${daysBetween(lv.start_date,lv.end_date)} 天）</div>
-            ${opts.showApplicant ? `<div class="ledger-applicant">申請人：${escapeHtml(lv.name)}（${escapeHtml(lv.username)}）${lv.requester_role ? ` · ${escapeHtml(ROLE_LABEL[lv.requester_role] || lv.requester_role)}` : ""}</div>` : ""}
+            <div class="ledger-meta">${formatDateTime(lv.start_date)} → ${formatDateTime(lv.end_date)}（共 ${formatDuration(lv.start_date,lv.end_date)}）</div>
+            ${opts.showApplicant ? `<div class="ledger-applicant">申請人：${escapeHtml(lv.name)}（${escapeHtml(lv.username)}）${lv.requester_role ? ` · ${escapeHtml(ROLE_LABEL[lv.requester_role] || lv.requester_role)}` : ""}${lv.department ? ` · ${escapeHtml(lv.department)}` : ""}</div>` : ""}
+            ${lv.attachment_path ? `<div class="ledger-applicant"><a class="link" href="/api/leaves/${lv.id}/attachment" target="_blank" rel="noopener">${escapeHtml(lv.attachment_original_name || "下載附件")}</a></div>` : ""}
           </div>
           ${statusStampHtml(lv.status)}
         </div>
@@ -239,38 +295,116 @@
   async function renderMineTab(){
     renderShell(`<div class="loading">載入中…</div>`);
     try{
-      const { leaves } = await api("/api/leaves/mine");
+      const params = new URLSearchParams();
+      if(state.mineFrom) params.set("from", state.mineFrom);
+      if(state.mineTo) params.set("to", state.mineTo);
+      const { leaves } = await api(`/api/leaves/mine${params.toString() ? "?"+params.toString() : ""}`);
       const filtered = state.filter === "all" ? leaves : leaves.filter(l=>l.status===state.filter);
       const listHtml = filtered.length ? filtered.map(l=>leaveCardHtml(l,{})).join("")
         : `<div class="empty-state"><span class="brandmark">目前沒有紀錄</span>還沒有符合條件的請假申請</div>`;
       renderShell(`
         <h1 class="page-title">我的請假紀錄</h1>
         <p class="page-sub">查看你所有的請假申請與目前狀態。</p>
-        <div class="filter-tabs">
-          ${["all","pending","approved","rejected"].map(f=>`<div class="filter-tab ${state.filter===f?'active':''}" data-f="${f}">${f==='all'?'全部':STATUS_LABEL[f]}</div>`).join("")}
+        <div class="toolbar">
+          <div class="filter-tabs" style="margin-bottom:0;">
+            ${["all","pending","approved","rejected"].map(f=>`<div class="filter-tab ${state.filter===f?'active':''}" data-f="${f}">${f==='all'?'全部':STATUS_LABEL[f]}</div>`).join("")}
+          </div>
+          <div class="field" style="margin:0; display:flex; gap:6px; align-items:center;">
+            <input type="date" id="mine-from" value="${escapeHtml(state.mineFrom||"")}">
+            <span style="color:var(--ink-soft);">至</span>
+            <input type="date" id="mine-to" value="${escapeHtml(state.mineTo||"")}">
+            ${(state.mineFrom || state.mineTo) ? `<button class="btn btn-ghost btn-small" id="mine-range-clear">清除</button>` : ""}
+          </div>
         </div>
         ${listHtml}`);
       document.querySelectorAll(".filter-tab").forEach(el=> el.onclick = () => setState({filter: el.dataset.f}));
+      document.getElementById("mine-from").onchange = e => setState({mineFrom: e.target.value || null});
+      document.getElementById("mine-to").onchange = e => setState({mineTo: e.target.value || null});
+      const clearBtn = document.getElementById("mine-range-clear");
+      if(clearBtn) clearBtn.onclick = () => setState({mineFrom:null, mineTo:null});
     }catch(err){ renderShell(`<div class="error-box">${escapeHtml(err.message)}</div>`); }
+  }
+
+  function leaveRowHtml(lv, opts){
+    opts = opts || {};
+    const isOwn = opts.currentUsername && lv.username === opts.currentUsername;
+    const actions = (opts.reviewActions && lv.status==='pending')
+      ? (isOwn
+          ? `<span style="color:var(--ink-soft); font-size:12px;">自己的申請</span>`
+          : `<div class="row-actions">
+               <button class="btn btn-small btn-approve" data-id="${lv.id}" data-action="approved">核准</button>
+               <button class="btn btn-small btn-reject" data-id="${lv.id}" data-action="rejected">拒絕</button>
+             </div>`)
+      : "";
+    return `
+      <tr>
+        <td>${escapeHtml(lv.name)}（${escapeHtml(lv.username)}）<br><span style="color:var(--ink-soft); font-size:11.5px;">${escapeHtml(ROLE_LABEL[lv.requester_role] || lv.requester_role || "")}</span></td>
+        <td>${escapeHtml(lv.department || "—")}</td>
+        <td>${escapeHtml(lv.type)}</td>
+        <td>${formatDateTime(lv.start_date)}<br>→ ${formatDateTime(lv.end_date)}<br><span style="color:var(--ink-soft); font-size:11.5px;">共 ${formatDuration(lv.start_date,lv.end_date)}</span></td>
+        <td>${statusStampHtml(lv.status)}</td>
+        <td style="max-width:220px;">${escapeHtml(lv.reason)}${lv.attachment_path ? `<br><a class="link" href="/api/leaves/${lv.id}/attachment" target="_blank" rel="noopener">${escapeHtml(lv.attachment_original_name || "附件")}</a>` : ""}</td>
+        <td>${actions}</td>
+      </tr>`;
+  }
+
+  // 只有職級在副理以上的人，才有機會同時看到兩種以上不同身份的申請，才需要這個篩選器
+  function canFilterByRoleLevel(){
+    return RANK[state.currentUser.role] >= RANK.deputy_manager;
+  }
+
+  // 依目前登入者的職級，列出所有職級比自己低的身份，當作篩選器的選項
+  // （職級順序：員工 < 課長 < 副理 < 經理 < 總經理 < 管理員，數字愈大代表職級愈高）
+  const ROLE_FILTER_ORDER = ["employee","section_chief","deputy_manager","manager","general_manager"];
+  function roleFilterOptions(){
+    return ROLE_FILTER_ORDER.filter(r => RANK[r] < RANK[state.currentUser.role]);
   }
 
   async function renderReviewTab(){
     renderShell(`<div class="loading">載入中…</div>`);
     try{
-      const { leaves } = await api("/api/leaves/all");
+      const params = new URLSearchParams();
+      if(state.roleFilter && state.roleFilter !== "all") params.set("role", state.roleFilter);
+      if(state.reviewFrom) params.set("from", state.reviewFrom);
+      if(state.reviewTo) params.set("to", state.reviewTo);
+      const { leaves } = await api(`/api/leaves/all${params.toString() ? "?"+params.toString() : ""}`);
       const filtered = state.filter === "all" ? leaves : leaves.filter(l=>l.status===state.filter);
-      const listHtml = filtered.length
-        ? filtered.map(l=>leaveCardHtml(l,{showApplicant:true, reviewActions: l.status==='pending', currentUsername: state.currentUser.username})).join("")
+      const tableHtml = filtered.length
+        ? `<table class="review-table">
+            <thead><tr><th>申請人</th><th>部門</th><th>假別</th><th>起訖時間</th><th>狀態</th><th>原因／附件</th><th>操作</th></tr></thead>
+            <tbody>${filtered.map(l=>leaveRowHtml(l,{reviewActions:true, currentUsername: state.currentUser.username})).join("")}</tbody>
+           </table>`
         : `<div class="empty-state"><span class="brandmark">目前沒有紀錄</span>還沒有符合條件的請假申請</div>`;
       renderShell(`
         <h1 class="page-title">審核請假申請</h1>
         <p class="page-sub">檢視所有同事的請假申請並進行核准或拒絕。</p>
         ${state.error ? `<div class="error-box">${escapeHtml(state.error)}</div>` : ""}
-        <div class="filter-tabs">
-          ${["all","pending","approved","rejected"].map(f=>`<div class="filter-tab ${state.filter===f?'active':''}" data-f="${f}">${f==='all'?'全部':STATUS_LABEL[f]}</div>`).join("")}
+        <div class="toolbar">
+          <div class="filter-tabs" style="margin-bottom:0;">
+            ${["all","pending","approved","rejected"].map(f=>`<div class="filter-tab ${state.filter===f?'active':''}" data-f="${f}">${f==='all'?'全部':STATUS_LABEL[f]}</div>`).join("")}
+          </div>
+          <div class="field" style="margin:0; display:flex; gap:6px; align-items:center;">
+            <input type="date" id="review-from" value="${escapeHtml(state.reviewFrom||"")}">
+            <span style="color:var(--ink-soft);">至</span>
+            <input type="date" id="review-to" value="${escapeHtml(state.reviewTo||"")}">
+            ${(state.reviewFrom || state.reviewTo) ? `<button class="btn btn-ghost btn-small" id="review-range-clear">清除</button>` : ""}
+          </div>
+          ${canFilterByRoleLevel() ? `
+            <div class="field" style="margin:0;">
+              <select id="role-filter">
+                <option value="all" ${(!state.roleFilter||state.roleFilter==='all')?'selected':''}>全部身份</option>
+                ${roleFilterOptions().map(r=>`<option value="${r}" ${state.roleFilter===r?'selected':''}>只看${escapeHtml(ROLE_LABEL[r]||r)}</option>`).join("")}
+              </select>
+            </div>` : ""}
         </div>
-        ${listHtml}`);
+        ${tableHtml}`);
       document.querySelectorAll(".filter-tab").forEach(el=> el.onclick = () => setState({filter: el.dataset.f}));
+      const roleFilterEl = document.getElementById("role-filter");
+      if(roleFilterEl) roleFilterEl.onchange = () => setState({roleFilter: roleFilterEl.value});
+      document.getElementById("review-from").onchange = e => setState({reviewFrom: e.target.value || null});
+      document.getElementById("review-to").onchange = e => setState({reviewTo: e.target.value || null});
+      const reviewClearBtn = document.getElementById("review-range-clear");
+      if(reviewClearBtn) reviewClearBtn.onclick = () => setState({reviewFrom:null, reviewTo:null});
       document.querySelectorAll("[data-action]").forEach(btn=>{
         btn.onclick = async () => {
           btn.disabled = true;
@@ -283,11 +417,52 @@
     }catch(err){ renderShell(`<div class="error-box">${escapeHtml(err.message)}</div>`); }
   }
 
+  async function renderAttendanceTab(){
+    renderShell(`<div class="loading">載入中…</div>`);
+    const today = new Date();
+    const pad = n => String(n).padStart(2,"0");
+    const defaultDate = `${today.getFullYear()}-${pad(today.getMonth()+1)}-${pad(today.getDate())}`;
+    const date = state.attendanceDate || defaultDate;
+    try{
+      const params = new URLSearchParams({ date });
+      const { leaves } = await api(`/api/leaves/all?${params.toString()}`);
+      const approved = leaves.filter(l=>l.status==='approved');
+      const pending = leaves.filter(l=>l.status==='pending');
+      const tableHtml = leaves.length
+        ? `<table class="review-table">
+            <thead><tr><th>申請人</th><th>部門</th><th>假別</th><th>起訖時間</th><th>狀態</th></tr></thead>
+            <tbody>${leaves.map(l=>`
+              <tr>
+                <td>${escapeHtml(l.name)}（${escapeHtml(l.username)}）<br><span style="color:var(--ink-soft); font-size:11.5px;">${escapeHtml(ROLE_LABEL[l.requester_role] || l.requester_role || "")}</span></td>
+                <td>${escapeHtml(l.department || "—")}</td>
+                <td>${escapeHtml(l.type)}</td>
+                <td>${formatDateTime(l.start_date)} → ${formatDateTime(l.end_date)}</td>
+                <td>${statusStampHtml(l.status)}</td>
+              </tr>`).join("")}</tbody>
+           </table>`
+        : `<div class="empty-state"><span class="brandmark">這天沒有人請假</span>可以放心排班</div>`;
+      renderShell(`
+        <h1 class="page-title">出勤查詢</h1>
+        <p class="page-sub">選擇日期，查看這一天有哪些人請假，方便確認人力是否充足。</p>
+        <div class="toolbar">
+          <div class="field" style="margin:0;"><input type="date" id="attendance-date" value="${date}"></div>
+          <button class="btn btn-small" id="attendance-query-btn" style="width:auto;">查詢</button>
+        </div>
+        <div class="summary-note">${date}　共 <b>${leaves.length}</b> 筆請假紀錄，其中已核准 <b>${approved.length}</b> 筆、待審核 <b>${pending.length}</b> 筆</div>
+        ${tableHtml}`);
+      document.getElementById("attendance-query-btn").onclick = () => {
+        const val = document.getElementById("attendance-date").value;
+        if(val) setState({ attendanceDate: val });
+      };
+    }catch(err){ renderShell(`<div class="error-box">${escapeHtml(err.message)}</div>`); }
+  }
+
   const ROLE_OPTIONS = [
-    ["employee","員工"],["deputy_manager","副經理/副廠長"],["manager","經理/廠長"],
+    ["employee","員工"],["section_chief","課長"],["deputy_manager","副經理/副廠長"],["manager","經理/廠長"],
     ["general_manager","總經理"],["admin","管理員"]
   ];
 
+  // 負責劃出帳號管理頁面
   async function renderAdminTab(){
     renderShell(`<div class="loading">載入中…</div>`);
     let users = [];
@@ -301,8 +476,15 @@
           <div>
             <div class="ledger-type">${escapeHtml(u.name)}（${escapeHtml(u.username)}）</div>
             <div class="ledger-meta">建立於 ${escapeHtml(u.created_at)}</div>
+            <div class="ledger-meta" style="margin-top:4px;">部門：${escapeHtml(u.department || "（未設定）")}　到職日：${escapeHtml(u.hire_date || "（未設定）")}</div>
+            <div class="ledger-meta" style="margin-top:4px;">特休額度（自動計算）：${u.seniorityDays} 天（${u.annualLeaveHours} 小時）</div>
           </div>
           <span class="role-pill">${escapeHtml(ROLE_LABEL[u.role] || u.role)}</span>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:12px; flex-wrap:wrap;">
+          <button class="btn btn-small btn-ghost set-dept-btn" data-username="${escapeHtml(u.username)}">設定部門</button>
+          <button class="btn btn-small btn-ghost set-hiredate-btn" data-username="${escapeHtml(u.username)}">設定到職日</button>
+          <button class="btn btn-small btn-ghost reset-pw-btn" data-username="${escapeHtml(u.username)}">重設密碼</button>
         </div>
       </div>`).join("");
 
@@ -319,25 +501,121 @@
           <div class="field"><label>身份</label>
             <select id="nu-role">${ROLE_OPTIONS.map(([v,l])=>`<option value="${v}">${l}</option>`).join("")}</select>
           </div>
+          <div class="field" id="nu-dept-field"><label>部門</label>
+            <select id="nu-department">
+              <option value="">請選擇部門</option>
+              ${DEPARTMENTS.map(d=>`<option value="${d}">${d}</option>`).join("")}
+            </select>
+          </div>
+          <div class="field"><label>到職日（選填，特休天數會依此自動計算，未設定前特休額度為 0）</label><input type="date" id="nu-hiredate"></div>
           <button class="btn" type="submit" id="nu-btn">建立帳號</button>
         </form>
+      </div>
+      <div class="panel" style="margin-top:16px;">
+        <h2 class="page-title" style="font-size:16px;">匯入員工 Excel</h2>
+        <p class="page-sub">欄位標題請用：帳號、姓名、密碼（選填）、身份、部門、到職日。帳號已存在會更新資料，不存在則新增（沒填密碼的新帳號預設密碼是 88888888）。</p>
+        <div class="field"><input type="file" id="import-file" accept=".xlsx,.xls"></div>
+        <button class="btn" type="button" id="import-btn">上傳並匯入</button>
+        <div id="import-result" style="margin-top:12px;"></div>
       </div>
       <h2 class="page-title" style="font-size:16px; margin-top:28px;">現有帳號（${users.length}）</h2>
       ${rowsHtml || `<div class="empty-state"><span class="brandmark">尚無帳號</span></div>`}
     `);
+
+    const nuRoleEl = document.getElementById("nu-role");
+    const nuDeptField = document.getElementById("nu-dept-field");
+    const nuDeptEl = document.getElementById("nu-department");
+    function syncDeptRequirement(){
+      const companyWide = COMPANY_WIDE_ROLES.includes(nuRoleEl.value);
+      nuDeptField.style.display = companyWide ? "none" : "";
+      nuDeptEl.required = !companyWide;
+      if(companyWide) nuDeptEl.value = "";
+    }
+    nuRoleEl.onchange = syncDeptRequirement;
+    syncDeptRequirement();
 
     document.getElementById("new-user-form").onsubmit = async (e) => {
       e.preventDefault();
       const name = document.getElementById("nu-name").value.trim();
       const username = document.getElementById("nu-username").value.trim();
       const password = document.getElementById("nu-password").value;
-      const role = document.getElementById("nu-role").value;
+      const role = nuRoleEl.value;
+      const department = nuDeptEl.value || null;
+      const hireDate = document.getElementById("nu-hiredate").value || null;
       const btn = document.getElementById("nu-btn");
       btn.disabled = true; btn.textContent = "建立中…";
       try{
-        await api("/api/admin/users", { method:"POST", body: JSON.stringify({username,password,name,role}) });
+        await api("/api/admin/users", { method:"POST", body: JSON.stringify({username,password,name,role,department,hireDate}) });
         setState({error:"", notice:`已建立帳號 "${username}"`, tab:"admin"});
       }catch(err){ setState({error: err.message, notice:""}); }
+    };
+
+    document.querySelectorAll(".reset-pw-btn").forEach(btn => {
+      btn.onclick = async () => {
+        const username = btn.dataset.username;
+        const newPassword = prompt(`請輸入「${username}」的新密碼（至少4個字元）`);
+        
+        if (newPassword === null) return; // 使用者按了取消
+        
+        try{
+          await api(`/api/admin/users/${username}/password`, { 
+            method:"POST", 
+            body: JSON.stringify({newPassword}) });
+          setState({error:"", notice:`已重設密碼 "${username}"`, tab:"admin"});
+        }catch(err){ setState({error: err.message, notice:""}); }
+      };
+    });
+
+    document.querySelectorAll(".set-dept-btn").forEach(btn => {
+      btn.onclick = async () => {
+        const username = btn.dataset.username;
+        const department = prompt(`請輸入「${username}」的部門（${DEPARTMENTS.join("、")}；總經理／管理員可留空）`);
+        if (department === null) return;
+        try{
+          await api(`/api/admin/users/${username}/department`, { method:"POST", body: JSON.stringify({department: department.trim()}) });
+          setState({error:"", notice:`已設定「${username}」的部門`, tab:"admin"});
+        }catch(err){ setState({error: err.message, notice:""}); }
+      };
+    });
+
+    document.querySelectorAll(".set-hiredate-btn").forEach(btn => {
+      btn.onclick = async () => {
+        const username = btn.dataset.username;
+        const hireDate = prompt(`請輸入「${username}」的到職日（格式 YYYY-MM-DD，例如 2024-03-01）\n特休天數會依這個日期自動重新計算。`);
+        if (hireDate === null) return;
+        try{
+          await api(`/api/admin/users/${username}/hire-date`, { method:"POST", body: JSON.stringify({hireDate}) });
+          setState({error:"", notice:`已設定「${username}」的到職日`, tab:"admin"});
+        }catch(err){ setState({error: err.message, notice:""}); }
+      };
+    });
+
+    document.getElementById("import-btn").onclick = async () => {
+      const fileInput = document.getElementById("import-file");
+      const file = fileInput.files[0];
+      if (!file) { setState({error:"請先選擇要匯入的 Excel 檔案", notice:""}); return; }
+
+      const importBtn = document.getElementById("import-btn");
+      importBtn.disabled = true; importBtn.textContent = "匯入中…";
+      try{
+        const formData = new FormData();
+        formData.append("file", file);
+        const result = await api("/api/admin/users/import", { method:"POST", body: formData });
+
+        let notice = `匯入完成：新增 ${result.createdCount} 筆、更新 ${result.updatedCount} 筆、失敗 ${result.failedCount} 筆`;
+        const defaultPwUsers = result.created.filter(c => c.usedDefaultPassword).map(c => c.username);
+        if (defaultPwUsers.length) {
+          notice += `。以下新帳號套用預設密碼「${result.defaultPassword}」，請提醒使用者登入後自行修改：${defaultPwUsers.join("、")}`;
+        }
+        let error = "";
+        if (result.failed.length) {
+          error = `匯入失敗 ${result.failed.length} 筆：` + result.failed.map(f => `第${f.row}列(${f.username})：${f.error}`).join("；");
+        }
+        // 匯入結束後重新整理整個管理頁面（含帳號列表），讓使用者馬上看到最新資料
+        setState({error, notice, tab:"admin"});
+      }catch(err){
+        setState({error: err.message, notice:""});
+      }
     };
   }
 
@@ -347,12 +625,17 @@
       if(state.tab === "submit") return renderSubmitTab();
       if(state.tab === "mine") return renderMineTab();
       if(state.tab === "review") return renderReviewTab();
+      if(state.tab === "attendance") return renderAttendanceTab();
       if(state.tab === "admin") return renderAdminTab();
     }
   }
 
   // check for an existing session on load (e.g. page refresh)
   (async function init(){
+    try{
+      const { departments } = await api("/api/departments");
+      DEPARTMENTS = departments || [];
+    }catch(e){}
     try{
       const { user } = await api("/api/me");
       if(user){ state.view = "app"; state.currentUser = user; }
