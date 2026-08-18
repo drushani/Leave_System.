@@ -107,4 +107,5 @@ CMD ["npm", "start"]
 ## 之後可以再加強的地方
 
 - 資料庫：demo 用 SQLite 很夠用，但多人同時大量寫入時建議換成 PostgreSQL / MySQL
+- 忘記密碼、修改密碼、刪除帳號、修改既有帳號身份等功能目前還沒有（目前「帳號管理」頁面只能新增帳號）
 - 目前 session 存在伺服器記憶體中，如果之後要跑多台伺服器（load balancing），需要把 session 改成存在 Redis 之類的共用儲存裡
