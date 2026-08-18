@@ -13,7 +13,7 @@ const bcrypt = require("bcryptjs");
 const db = require("../db");
 
 const [, , username, password, ...nameParts] = process.argv;
-const name = nameParts.join(" ");
+const name = nameParts.join(" ");                                 // 把後面輸入的名字若有輸入到空格則連起來
 
 if (!username || !password || !name) {
   console.error("用法：node scripts/create-admin.js <帳號> <密碼> <姓名>");
