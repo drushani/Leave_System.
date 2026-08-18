@@ -7,6 +7,8 @@
 <!--20260817: 新增偵測格式為何，以防檔案解析錯誤造成檔案損壞-->
 <!--20260817: 新增FormData()，這種容器文字跟檔案都能裝-->
 <!--20260817: 請假紀錄卡片上，有附件的話會顯示一個「*檔名」的下載連結-->
+<!--20260818: api() 呼叫非 GET 請求時自動帶上 X-CSRF-Token 標頭，登入/me 回傳的 csrfToken 存進外層變數-->
+<!--20260818: 帳號管理頁面顯示登入鎖定狀態，鎖定中可以按「解除登入鎖定」讓管理員手動解除-->
 
 <!DOCTYPE html>
 <html lang="zh-Hant">
@@ -60,7 +62,7 @@
   .row2{display:grid; grid-template-columns:1fr 1fr; gap:16px;}
   .days-note{font-size:12.5px; color:var(--brand); font-family:'IBM Plex Mono', monospace; margin-top:-8px; margin-bottom:16px;}
   .ledger-card{background:var(--white); border:1px solid var(--line); border-radius:2px; padding:20px 22px; margin-bottom:14px;}
-  .ledger-top{display:flex; justify-content:space-between; align-items:flex-start; gap:16px;}
+  .ledger-top{display:flex; justify-content:space-between; align-items:center; gap:16px;}
   .ledger-type{font-family:'Fraunces', serif; font-size:17px; font-weight:600; margin:0 0 4px;}
   .ledger-meta{font-size:12.5px; color:var(--ink-soft); font-family:'IBM Plex Mono', monospace;}
   .ledger-reason{font-size:13.5px; color:var(--ink); margin-top:10px; line-height:1.5;}
@@ -80,7 +82,7 @@
   .toolbar label{margin:0; white-space:nowrap;}
   .toolbar select, .toolbar input[type=date]{width:auto;}
   .review-table{width:100%; border-collapse:collapse; background:var(--white); border:1px solid var(--line); font-size:13px;}
-  .review-table th, .review-table td{padding:10px 12px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top;}
+  .review-table th, .review-table td{padding:10px 12px; border-bottom:1px solid var(--line); text-align:left; vertical-align:middle;}
   .review-table th{background:var(--paper-dim); font-weight:600; color:var(--ink-soft); font-size:12px;}
   .review-table tr:last-child td{border-bottom:none;}
   .review-table .row-actions{display:flex; gap:8px;}
@@ -100,18 +102,34 @@
 (function(){
   "use strict";
 
+  let CSRF_TOKEN = null; // 登入或 /api/me 成功時會拿到，之後每次寫入型請求都要附上，伺服器用它防 CSRF（跨站請求偽造）
+
   async function api(path, options){
     options = options || {};
     // 如果 body 是 FormData（例如包含檔案），不能手動設定 Content-Type，
     // 瀏覽器需要自己加上 multipart/form-data 的 boundary 才會正確送出。
     const isFormData = options.body instanceof FormData;
+    const method = (options.method || "GET").toUpperCase();
+    const headers = isFormData ? {} : {"Content-Type":"application/json"};
+    // 非 GET 的請求（送出/審核/建立帳號…）才需要帶 CSRF token，登入前也還沒有 token 可以帶
+    if(method !== "GET" && CSRF_TOKEN) headers["X-CSRF-Token"] = CSRF_TOKEN;
     const res = await fetch(path, Object.assign({
-      headers: isFormData ? {} : {"Content-Type":"application/json"},
+      headers,
       credentials: "same-origin"
     }, options));
     let data = {};
     try{ data = await res.json(); }catch(e){}
-    if(!res.ok) throw new Error(data.error || "發生未知錯誤");
+    if(!res.ok){
+      // 401 代表「伺服器覺得你現在沒有登入」——可能是原本就沒登入、session 過期，
+      // 或是帳號被管理員停用了（requireAuth 每次都會重新檢查一次帳號是不是還啟用中）。
+      // 不管是哪一種，前端都應該直接把畫面切回登入頁，不要讓使用者卡在一個「看起來還登入著、但操作什麼都失敗」的畫面。
+      if(res.status === 401){
+        CSRF_TOKEN = null;
+        state = Object.assign({}, state, {view:"login", currentUser:null});
+        render();
+      }
+      throw new Error(data.error || "發生未知錯誤");
+    }
     return data;
   }
 
@@ -144,7 +162,7 @@
   }
 
   const LEAVE_TYPES = ["特休","病假","事假","婚假","喪假","其他"];
-  const STATUS_LABEL = { pending:"待審核", approved:"已核准", rejected:"已拒絕" };
+  const STATUS_LABEL = { pending:"待審核", approved:"已核准", rejected:"已拒絕", cancelled:"已取消" };
   const RANK = { employee:1, section_chief:2, deputy_manager:3, manager:4, general_manager:5, admin:6 };
   const ROLE_LABEL = { employee:"員工", section_chief:"課長", deputy_manager:"副經理/副廠長", manager:"經理/廠長", general_manager:"總經理", admin:"管理員" };
   const COMPANY_WIDE_ROLES = ["general_manager","admin"];
@@ -156,11 +174,13 @@
         <div class="brandmark form-title">請假申請系統</div>
         <p class="form-sub">登入你的帳號以提交或審核請假申請</p>
         ${state.error ? `<div class="error-box">${escapeHtml(state.error)}</div>` : ""}
+        ${state.notice ? `<div class="success-box">${escapeHtml(state.notice)}</div>` : ""}
         <form id="login-form">
           <div class="field"><label>帳號</label><input type="text" id="login-username" autocomplete="username" required></div>
           <div class="field"><label>密碼</label><input type="password" id="login-password" autocomplete="current-password" required></div>
           <button class="btn" type="submit" id="login-btn">登入</button>
         </form>
+        <div class="switch-row"><span class="link" id="forgot-pw-link">忘記密碼？</span></div>
         <div class="hint">帳號密碼會以雜湊方式儲存在你自己架設的資料庫中。如需帳號，請洽系統管理員建立。</div>
       </div></div>`;
     document.getElementById("login-form").onsubmit = async (e) => {
@@ -170,8 +190,78 @@
       const btn = document.getElementById("login-btn");
       btn.disabled = true; btn.textContent = "登入中…";
       try{
-        const { user } = await api("/api/login", { method:"POST", body: JSON.stringify({username,password}) });
-        setState({view:"app", currentUser:user, error:"", tab:"submit"});
+        const { user, csrfToken } = await api("/api/login", { method:"POST", body: JSON.stringify({username,password}) });
+        CSRF_TOKEN = csrfToken;
+        if(user.mustChangePassword){
+          setState({view:"app", currentUser:user, error:"", tab:"force-password"});
+        } else {
+          setState({view:"app", currentUser:user, error:"", tab:"submit"});
+        }
+      }catch(err){ setState({error: err.message}); }
+    };
+    document.getElementById("forgot-pw-link").onclick = () => setState({view:"forgot", error:"", notice:""});
+  }
+
+  // 忘記密碼：輸入帳號，系統會寄一封重設密碼信到綁定的信箱（不管帳號存不存在都顯示一樣的訊息，避免帳號列舉）
+  function renderForgotPassword(){
+    app.innerHTML = `
+      <div class="auth-wrap"><div class="auth-card">
+        <div class="brandmark form-title">忘記密碼</div>
+        <p class="form-sub">輸入你的帳號，我們會寄一封重設密碼的信到你綁定的信箱。</p>
+        ${state.error ? `<div class="error-box">${escapeHtml(state.error)}</div>` : ""}
+        ${state.notice ? `<div class="success-box">${escapeHtml(state.notice)}</div>` : ""}
+        <form id="forgot-pw-form">
+          <div class="field"><label>帳號</label><input type="text" id="forgot-username" autocomplete="username" required></div>
+          <button class="btn" type="submit" id="forgot-pw-btn">寄送重設密碼信</button>
+        </form>
+        <div class="switch-row"><span class="link" id="back-to-login-link">回到登入頁</span></div>
+      </div></div>`;
+    document.getElementById("back-to-login-link").onclick = () => setState({view:"login", error:"", notice:""});
+    document.getElementById("forgot-pw-form").onsubmit = async (e) => {
+      e.preventDefault();
+      const username = document.getElementById("forgot-username").value.trim();
+      const btn = document.getElementById("forgot-pw-btn");
+      btn.disabled = true; btn.textContent = "寄送中…";
+      try{
+        const { message } = await api("/api/forgot-password", { method:"POST", body: JSON.stringify({username}) });
+        setState({error:"", notice: message});
+      }catch(err){
+        setState({error: err.message, notice:""});
+      }finally{
+        btn.disabled = false; btn.textContent = "寄送重設密碼信";
+      }
+    };
+  }
+
+  // 使用者點擊信裡的重設連結進來的畫面（網址帶 ?resetToken=xxx）
+  function renderResetPassword(){
+    app.innerHTML = `
+      <div class="auth-wrap"><div class="auth-card">
+        <div class="brandmark form-title">設定新密碼</div>
+        <p class="form-sub">請輸入你的新密碼。這個重設連結限時 15 分鐘內有效，且只能使用一次。</p>
+        ${state.error ? `<div class="error-box">${escapeHtml(state.error)}</div>` : ""}
+        <form id="reset-pw-form">
+          <div class="field"><label>新密碼（至少 8 個字元，需包含英文字母與數字）</label><input type="password" id="reset-new" autocomplete="new-password" minlength="8" required></div>
+          <div class="field"><label>再輸入一次新密碼</label><input type="password" id="reset-confirm" autocomplete="new-password" minlength="8" required></div>
+          <button class="btn" type="submit" id="reset-pw-btn">更新密碼</button>
+        </form>
+        <div class="switch-row"><span class="link" id="back-to-login-link2">回到登入頁</span></div>
+      </div></div>`;
+    document.getElementById("back-to-login-link2").onclick = () => {
+      history.replaceState(null, "", location.pathname);
+      setState({view:"login", error:"", notice:""});
+    };
+    document.getElementById("reset-pw-form").onsubmit = async (e) => {
+      e.preventDefault();
+      const newPassword = document.getElementById("reset-new").value;
+      const confirm = document.getElementById("reset-confirm").value;
+      if(newPassword !== confirm){ setState({error:"兩次輸入的新密碼不一致"}); return; }
+      const btn = document.getElementById("reset-pw-btn");
+      btn.disabled = true; btn.textContent = "更新中…";
+      try{
+        await api("/api/reset-password", { method:"POST", body: JSON.stringify({token: state.resetToken, newPassword}) });
+        history.replaceState(null, "", location.pathname);
+        setState({view:"login", error:"", notice:"密碼已更新，請用新密碼登入", resetToken:null});
       }catch(err){ setState({error: err.message}); }
     };
   }
@@ -185,6 +275,7 @@
         <div class="topbar-user">
           <span>${escapeHtml(u.name)}</span>
           <span class="role-pill">${escapeHtml(ROLE_LABEL[u.role] || u.role)}${u.department ? ` · ${escapeHtml(u.department)}` : ""}</span>
+          <button class="btn btn-ghost btn-small" id="change-pw-btn">修改密碼</button>
           <button class="btn btn-ghost btn-small" id="logout-btn">登出</button>
         </div>
       </div>
@@ -200,8 +291,10 @@
       </div>`;
     document.getElementById("logout-btn").onclick = async () => {
       await api("/api/logout", { method:"POST" });
+      CSRF_TOKEN = null;
       setState({view:"login", currentUser:null, error:""});
     };
+    document.getElementById("change-pw-btn").onclick = () => setState({tab:"change-password", error:"", notice:""});
     document.querySelectorAll(".nav-item").forEach(el=>{
       el.onclick = () => setState({tab: el.dataset.tab, error:"", notice:""});
     });
@@ -283,12 +376,17 @@
           ${statusStampHtml(lv.status)}
         </div>
         <div class="ledger-reason">${escapeHtml(lv.reason)}</div>
+        ${lv.status === "rejected" && lv.reject_reason ? `<div class="ledger-applicant" style="margin-top:8px; color:var(--stamp-reject);">拒絕理由：${escapeHtml(lv.reject_reason)}</div>` : ""}
         ${opts.reviewActions && !isOwn ? `
           <div class="review-actions">
             <button class="btn btn-small btn-approve" data-id="${lv.id}" data-action="approved">核准</button>
             <button class="btn btn-small btn-reject" data-id="${lv.id}" data-action="rejected">拒絕</button>
           </div>` : ""}
         ${opts.reviewActions && isOwn ? `<div class="ledger-applicant" style="margin-top:10px;">這是你自己的申請，無法自行審核，需交由其他主管處理</div>` : ""}
+        ${opts.allowCancel && lv.status === "pending" ? `
+          <div class="review-actions">
+            <button class="btn btn-small btn-ghost cancel-leave-btn" data-id="${lv.id}">取消申請</button>
+          </div>` : ""}
       </div>`;
   }
 
@@ -300,14 +398,16 @@
       if(state.mineTo) params.set("to", state.mineTo);
       const { leaves } = await api(`/api/leaves/mine${params.toString() ? "?"+params.toString() : ""}`);
       const filtered = state.filter === "all" ? leaves : leaves.filter(l=>l.status===state.filter);
-      const listHtml = filtered.length ? filtered.map(l=>leaveCardHtml(l,{})).join("")
+      const listHtml = filtered.length ? filtered.map(l=>leaveCardHtml(l,{allowCancel:true})).join("")
         : `<div class="empty-state"><span class="brandmark">目前沒有紀錄</span>還沒有符合條件的請假申請</div>`;
       renderShell(`
         <h1 class="page-title">我的請假紀錄</h1>
-        <p class="page-sub">查看你所有的請假申請與目前狀態。</p>
+        <p class="page-sub">查看你所有的請假申請與目前狀態。待審核中的申請可以自行取消。</p>
+        ${state.error ? `<div class="error-box">${escapeHtml(state.error)}</div>` : ""}
+        ${state.notice ? `<div class="success-box">${escapeHtml(state.notice)}</div>` : ""}
         <div class="toolbar">
           <div class="filter-tabs" style="margin-bottom:0;">
-            ${["all","pending","approved","rejected"].map(f=>`<div class="filter-tab ${state.filter===f?'active':''}" data-f="${f}">${f==='all'?'全部':STATUS_LABEL[f]}</div>`).join("")}
+            ${["all","pending","approved","rejected","cancelled"].map(f=>`<div class="filter-tab ${state.filter===f?'active':''}" data-f="${f}">${f==='all'?'全部':STATUS_LABEL[f]}</div>`).join("")}
           </div>
           <div class="field" style="margin:0; display:flex; gap:6px; align-items:center;">
             <input type="date" id="mine-from" value="${escapeHtml(state.mineFrom||"")}">
@@ -322,6 +422,16 @@
       document.getElementById("mine-to").onchange = e => setState({mineTo: e.target.value || null});
       const clearBtn = document.getElementById("mine-range-clear");
       if(clearBtn) clearBtn.onclick = () => setState({mineFrom:null, mineTo:null});
+      document.querySelectorAll(".cancel-leave-btn").forEach(btn=>{
+        btn.onclick = async () => {
+          if(!confirm("確定要取消這筆申請嗎？")) return;
+          btn.disabled = true;
+          try{
+            await api(`/api/leaves/${btn.dataset.id}/cancel`, { method:"POST" });
+            setState({error:"", notice:"已取消申請", tab:"mine"});
+          }catch(err){ setState({error: err.message, notice:""}); }
+        };
+      });
     }catch(err){ renderShell(`<div class="error-box">${escapeHtml(err.message)}</div>`); }
   }
 
@@ -336,6 +446,7 @@
                <button class="btn btn-small btn-reject" data-id="${lv.id}" data-action="rejected">拒絕</button>
              </div>`)
       : "";
+    const reasonCell = `${escapeHtml(lv.reason)}${lv.attachment_path ? `<br><a class="link" href="/api/leaves/${lv.id}/attachment" target="_blank" rel="noopener">${escapeHtml(lv.attachment_original_name || "附件")}</a>` : ""}${lv.status === "rejected" && lv.reject_reason ? `<br><span style="color:var(--stamp-reject); font-size:12px;">拒絕理由：${escapeHtml(lv.reject_reason)}</span>` : ""}`;
     return `
       <tr>
         <td>${escapeHtml(lv.name)}（${escapeHtml(lv.username)}）<br><span style="color:var(--ink-soft); font-size:11.5px;">${escapeHtml(ROLE_LABEL[lv.requester_role] || lv.requester_role || "")}</span></td>
@@ -343,7 +454,7 @@
         <td>${escapeHtml(lv.type)}</td>
         <td>${formatDateTime(lv.start_date)}<br>→ ${formatDateTime(lv.end_date)}<br><span style="color:var(--ink-soft); font-size:11.5px;">共 ${formatDuration(lv.start_date,lv.end_date)}</span></td>
         <td>${statusStampHtml(lv.status)}</td>
-        <td style="max-width:220px;">${escapeHtml(lv.reason)}${lv.attachment_path ? `<br><a class="link" href="/api/leaves/${lv.id}/attachment" target="_blank" rel="noopener">${escapeHtml(lv.attachment_original_name || "附件")}</a>` : ""}</td>
+        <td style="max-width:220px;">${reasonCell}</td>
         <td>${actions}</td>
       </tr>`;
   }
@@ -381,7 +492,7 @@
         ${state.error ? `<div class="error-box">${escapeHtml(state.error)}</div>` : ""}
         <div class="toolbar">
           <div class="filter-tabs" style="margin-bottom:0;">
-            ${["all","pending","approved","rejected"].map(f=>`<div class="filter-tab ${state.filter===f?'active':''}" data-f="${f}">${f==='all'?'全部':STATUS_LABEL[f]}</div>`).join("")}
+            ${["all","pending","approved","rejected","cancelled"].map(f=>`<div class="filter-tab ${state.filter===f?'active':''}" data-f="${f}">${f==='all'?'全部':STATUS_LABEL[f]}</div>`).join("")}
           </div>
           <div class="field" style="margin:0; display:flex; gap:6px; align-items:center;">
             <input type="date" id="review-from" value="${escapeHtml(state.reviewFrom||"")}">
@@ -396,6 +507,7 @@
                 ${roleFilterOptions().map(r=>`<option value="${r}" ${state.roleFilter===r?'selected':''}>只看${escapeHtml(ROLE_LABEL[r]||r)}</option>`).join("")}
               </select>
             </div>` : ""}
+          <button class="btn btn-ghost btn-small" id="export-excel-btn" style="margin-left:auto;">匯出 Excel</button>
         </div>
         ${tableHtml}`);
       document.querySelectorAll(".filter-tab").forEach(el=> el.onclick = () => setState({filter: el.dataset.f}));
@@ -405,11 +517,25 @@
       document.getElementById("review-to").onchange = e => setState({reviewTo: e.target.value || null});
       const reviewClearBtn = document.getElementById("review-range-clear");
       if(reviewClearBtn) reviewClearBtn.onclick = () => setState({reviewFrom:null, reviewTo:null});
+      document.getElementById("export-excel-btn").onclick = () => {
+        // 匯出的範圍跟目前畫面上的篩選條件（身份、狀態、日期區間）完全一致，用同一組 query string 打後端
+        const exportParams = new URLSearchParams(params);
+        if(state.filter !== "all") exportParams.set("status", state.filter);
+        window.location.href = `/api/leaves/export${exportParams.toString() ? "?"+exportParams.toString() : ""}`;
+      };
       document.querySelectorAll("[data-action]").forEach(btn=>{
         btn.onclick = async () => {
+          const action = btn.dataset.action;
+          let reason = "";
+          if(action === "rejected"){
+            reason = prompt("請填寫拒絕理由（申請人會收到這則理由）");
+            if(reason === null) return; // 使用者按了取消
+            reason = reason.trim();
+            if(!reason){ setState({error:"拒絕申請時必須填寫理由"}); return; }
+          }
           btn.disabled = true;
           try{
-            await api(`/api/leaves/${btn.dataset.id}/review`, { method:"POST", body: JSON.stringify({action: btn.dataset.action}) });
+            await api(`/api/leaves/${btn.dataset.id}/review`, { method:"POST", body: JSON.stringify({action, reason}) });
             renderReviewTab();
           }catch(err){ setState({error: err.message}); }
         };
@@ -471,20 +597,28 @@
     }catch(err){ renderShell(`<div class="error-box">${escapeHtml(err.message)}</div>`); return; }
 
     const rowsHtml = users.map(u => `
-      <div class="ledger-card">
+      <div class="ledger-card" style="${u.active ? "" : "opacity:0.6;"}">
         <div class="ledger-top">
           <div>
-            <div class="ledger-type">${escapeHtml(u.name)}（${escapeHtml(u.username)}）</div>
+            <div class="ledger-type">${escapeHtml(u.name)}（${escapeHtml(u.username)}）${!u.active ? `<span class="stamp stamp-rejected" style="font-size:10px; padding:3px 7px; margin-left:6px;">已停用</span>` : ""}</div>
             <div class="ledger-meta">建立於 ${escapeHtml(u.created_at)}</div>
             <div class="ledger-meta" style="margin-top:4px;">部門：${escapeHtml(u.department || "（未設定）")}　到職日：${escapeHtml(u.hire_date || "（未設定）")}</div>
+            <div class="ledger-meta" style="margin-top:4px;">通知信箱：${escapeHtml(u.email || "（未設定）")}</div>
             <div class="ledger-meta" style="margin-top:4px;">特休額度（自動計算）：${u.seniorityDays} 天（${u.annualLeaveHours} 小時）</div>
+            ${u.must_change_password ? `<div class="ledger-meta" style="margin-top:4px; color:var(--stamp-pending);">尚未自行修改過密碼</div>` : ""}
+            ${u.isLocked ? `<div class="ledger-meta" style="margin-top:4px; color:var(--stamp-reject);">登入已被鎖定，約 ${Math.ceil((u.lockedUntil - Date.now())/60000)} 分鐘後自動解除</div>` : ""}
           </div>
           <span class="role-pill">${escapeHtml(ROLE_LABEL[u.role] || u.role)}</span>
         </div>
         <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:12px; flex-wrap:wrap;">
           <button class="btn btn-small btn-ghost set-dept-btn" data-username="${escapeHtml(u.username)}">設定部門</button>
           <button class="btn btn-small btn-ghost set-hiredate-btn" data-username="${escapeHtml(u.username)}">設定到職日</button>
+          <button class="btn btn-small btn-ghost set-email-btn" data-username="${escapeHtml(u.username)}">設定信箱</button>
           <button class="btn btn-small btn-ghost reset-pw-btn" data-username="${escapeHtml(u.username)}">重設密碼</button>
+          ${u.isLocked ? `<button class="btn btn-small btn-ghost unlock-login-btn" data-username="${escapeHtml(u.username)}">解除登入鎖定</button>` : ""}
+          ${u.username !== state.currentUser.username ? `
+            <button class="btn btn-small ${u.active ? "btn-reject" : "btn-approve"} toggle-active-btn" data-username="${escapeHtml(u.username)}" data-active="${u.active ? "1" : "0"}">${u.active ? "停用帳號" : "啟用帳號"}</button>
+          ` : `<span style="font-size:12px; color:var(--ink-soft); align-self:center;">（這是你自己的帳號）</span>`}
         </div>
       </div>`).join("");
 
@@ -497,7 +631,7 @@
         <form id="new-user-form">
           <div class="field"><label>姓名</label><input type="text" id="nu-name" required></div>
           <div class="field"><label>帳號</label><input type="text" id="nu-username" required></div>
-          <div class="field"><label>密碼</label><input type="password" id="nu-password" required minlength="4"></div>
+          <div class="field"><label>密碼（至少 8 個字元，需包含英文字母與數字）</label><input type="password" id="nu-password" required minlength="8"></div>
           <div class="field"><label>身份</label>
             <select id="nu-role">${ROLE_OPTIONS.map(([v,l])=>`<option value="${v}">${l}</option>`).join("")}</select>
           </div>
@@ -508,12 +642,13 @@
             </select>
           </div>
           <div class="field"><label>到職日（選填，特休天數會依此自動計算，未設定前特休額度為 0）</label><input type="date" id="nu-hiredate"></div>
+          <div class="field"><label>通知信箱（選填，公司內部信箱或 Gmail 都可以，忘記密碼跟審核通知會寄到這裡）</label><input type="email" id="nu-email" placeholder="name@example.com"></div>
           <button class="btn" type="submit" id="nu-btn">建立帳號</button>
         </form>
       </div>
       <div class="panel" style="margin-top:16px;">
         <h2 class="page-title" style="font-size:16px;">匯入員工 Excel</h2>
-        <p class="page-sub">欄位標題請用：帳號、姓名、密碼（選填）、身份、部門、到職日。帳號已存在會更新資料，不存在則新增（沒填密碼的新帳號預設密碼是 88888888）。</p>
+        <p class="page-sub">欄位標題請用：帳號、姓名、密碼（選填）、身份、部門、到職日、Email（選填）。帳號已存在會更新資料，不存在則新增（沒填密碼的新帳號預設密碼是 welcome1）。</p>
         <div class="field"><input type="file" id="import-file" accept=".xlsx,.xls"></div>
         <button class="btn" type="button" id="import-btn">上傳並匯入</button>
         <div id="import-result" style="margin-top:12px;"></div>
@@ -542,10 +677,11 @@
       const role = nuRoleEl.value;
       const department = nuDeptEl.value || null;
       const hireDate = document.getElementById("nu-hiredate").value || null;
+      const email = document.getElementById("nu-email").value.trim() || null;
       const btn = document.getElementById("nu-btn");
       btn.disabled = true; btn.textContent = "建立中…";
       try{
-        await api("/api/admin/users", { method:"POST", body: JSON.stringify({username,password,name,role,department,hireDate}) });
+        await api("/api/admin/users", { method:"POST", body: JSON.stringify({username,password,name,role,department,hireDate,email}) });
         setState({error:"", notice:`已建立帳號 "${username}"`, tab:"admin"});
       }catch(err){ setState({error: err.message, notice:""}); }
     };
@@ -553,7 +689,7 @@
     document.querySelectorAll(".reset-pw-btn").forEach(btn => {
       btn.onclick = async () => {
         const username = btn.dataset.username;
-        const newPassword = prompt(`請輸入「${username}」的新密碼（至少4個字元）`);
+        const newPassword = prompt(`請輸入「${username}」的新密碼（至少 8 個字元，需包含英文字母與數字）`);
         
         if (newPassword === null) return; // 使用者按了取消
         
@@ -590,6 +726,45 @@
       };
     });
 
+    document.querySelectorAll(".set-email-btn").forEach(btn => {
+      btn.onclick = async () => {
+        const username = btn.dataset.username;
+        const email = prompt(`請輸入「${username}」的通知信箱（公司內部信箱或 Gmail 都可以，留空可清除）`);
+        if (email === null) return;
+        try{
+          await api(`/api/admin/users/${username}/email`, { method:"POST", body: JSON.stringify({email: email.trim()}) });
+          setState({error:"", notice:`已設定「${username}」的信箱`, tab:"admin"});
+        }catch(err){ setState({error: err.message, notice:""}); }
+      };
+    });
+
+    document.querySelectorAll(".unlock-login-btn").forEach(btn => {
+      btn.onclick = async () => {
+        const username = btn.dataset.username;
+        btn.disabled = true;
+        try{
+          await api(`/api/admin/users/${username}/unlock-login`, { method:"POST" });
+          setState({error:"", notice:`已解除「${username}」的登入鎖定`, tab:"admin"});
+        }catch(err){ setState({error: err.message, notice:""}); }
+      };
+    });
+
+    document.querySelectorAll(".toggle-active-btn").forEach(btn => {
+      btn.onclick = async () => {
+        const username = btn.dataset.username;
+        const currentlyActive = btn.dataset.active === "1";
+        const confirmMsg = currentlyActive
+          ? `確定要停用「${username}」的帳號嗎？停用後這個帳號將無法登入，但過去的請假紀錄會保留。`
+          : `確定要重新啟用「${username}」的帳號嗎？`;
+        if (!confirm(confirmMsg)) return;
+        btn.disabled = true;
+        try{
+          await api(`/api/admin/users/${username}/active`, { method:"POST", body: JSON.stringify({active: !currentlyActive}) });
+          setState({error:"", notice:`已${currentlyActive ? "停用" : "啟用"}「${username}」的帳號`, tab:"admin"});
+        }catch(err){ setState({error: err.message, notice:""}); }
+      };
+    });
+
     document.getElementById("import-btn").onclick = async () => {
       const fileInput = document.getElementById("import-file");
       const file = fileInput.files[0];
@@ -621,24 +796,132 @@
 
   function render(){
     if(state.view === "login") return renderLogin();
+    if(state.view === "forgot") return renderForgotPassword();
+    if(state.view === "reset") return renderResetPassword();
     if(state.view === "app"){
+      // 帳號被標記「必須先改密碼」時，不管原本要去哪個分頁都先攔下來，只能改密碼或登出
+      if(state.currentUser && state.currentUser.mustChangePassword && state.tab !== "force-password") {
+        state.tab = "force-password";
+      }
+      if(state.tab === "force-password") return renderForcePasswordScreen();
       if(state.tab === "submit") return renderSubmitTab();
       if(state.tab === "mine") return renderMineTab();
       if(state.tab === "review") return renderReviewTab();
       if(state.tab === "attendance") return renderAttendanceTab();
       if(state.tab === "admin") return renderAdminTab();
+      if(state.tab === "change-password") return renderChangePasswordTab();
     }
+  }
+
+  // 強制改密碼畫面：帳號密碼是別人（管理員／匯入 Excel）設定的，第一次登入要先換掉才能用系統其他功能。
+  // 故意不套用 renderShell（沒有側邊欄），避免讓人以為可以繞去別的分頁——反正伺服器那邊寫入型操作也會被擋下來。
+  function renderForcePasswordScreen(){
+    const u = state.currentUser;
+    app.innerHTML = `
+      <div class="auth-wrap"><div class="auth-card">
+        <div class="brandmark form-title">請先設定新密碼</div>
+        <p class="form-sub">${escapeHtml(u.name)} 您好，這組密碼是管理員設定的，請先改成只有您自己知道的密碼，才能繼續使用系統。</p>
+        ${state.error ? `<div class="error-box">${escapeHtml(state.error)}</div>` : ""}
+        <form id="force-pw-form">
+          <div class="field"><label>目前的密碼</label><input type="password" id="fpw-current" autocomplete="current-password" required></div>
+          <div class="field"><label>新密碼（至少 8 個字元，需包含英文字母與數字）</label><input type="password" id="fpw-new" autocomplete="new-password" minlength="8" required></div>
+          <div class="field"><label>再輸入一次新密碼</label><input type="password" id="fpw-confirm" autocomplete="new-password" minlength="8" required></div>
+          <button class="btn" type="submit" id="fpw-btn">更新密碼並繼續</button>
+        </form>
+        <div class="switch-row"><span class="link" id="force-logout-link">登出</span></div>
+      </div></div>`;
+    document.getElementById("force-logout-link").onclick = async () => {
+      await api("/api/logout", { method:"POST" });
+      CSRF_TOKEN = null;
+      setState({view:"login", currentUser:null, error:""});
+    };
+    document.getElementById("force-pw-form").onsubmit = async (e) => {
+      e.preventDefault();
+      const currentPassword = document.getElementById("fpw-current").value;
+      const newPassword = document.getElementById("fpw-new").value;
+      const confirm = document.getElementById("fpw-confirm").value;
+      if(newPassword !== confirm){ setState({error:"兩次輸入的新密碼不一致"}); return; }
+      const btn = document.getElementById("fpw-btn");
+      btn.disabled = true; btn.textContent = "更新中…";
+      try{
+        const { user } = await api("/api/me/password", { method:"POST", body: JSON.stringify({currentPassword, newPassword}) });
+        setState({currentUser:user, error:"", notice:"密碼已更新", tab:"submit"});
+      }catch(err){ setState({error: err.message}); }
+    };
+  }
+
+  // 一般使用者自己主動改密碼（從 topbar 的「修改密碼」進來，非強制情境），
+  // 同一頁也讓使用者自己綁定／修改通知信箱（忘記密碼、審核通知都要寄到這個信箱）
+  function renderChangePasswordTab(){
+    const u = state.currentUser;
+    const bodyHtml = `
+      <h1 class="page-title">修改密碼</h1>
+      <p class="page-sub">為了帳號安全，建議定期更換密碼，並避免使用其他網站也在用的密碼。</p>
+      ${state.error ? `<div class="error-box">${escapeHtml(state.error)}</div>` : ""}
+      ${state.notice ? `<div class="success-box">${escapeHtml(state.notice)}</div>` : ""}
+      <div class="panel" style="margin-bottom:16px;">
+        <h2 class="page-title" style="font-size:16px; margin-bottom:6px;">通知信箱</h2>
+        <p class="page-sub" style="margin-bottom:16px;">用來接收忘記密碼、請假審核結果等系統通知，公司內部信箱或 Gmail 都可以。</p>
+        <form id="change-email-form">
+          <div class="field"><label>Email</label><input type="email" id="cem-email" value="${escapeHtml(u.email || "")}" placeholder="name@example.com"></div>
+          <button class="btn btn-ghost" type="submit" id="cem-btn">儲存信箱</button>
+        </form>
+      </div>
+      <div class="panel">
+        <form id="change-pw-form">
+          <div class="field"><label>目前的密碼</label><input type="password" id="cpw-current" autocomplete="current-password" required></div>
+          <div class="field"><label>新密碼（至少 8 個字元，需包含英文字母與數字）</label><input type="password" id="cpw-new" autocomplete="new-password" minlength="8" required></div>
+          <div class="field"><label>再輸入一次新密碼</label><input type="password" id="cpw-confirm" autocomplete="new-password" minlength="8" required></div>
+          <button class="btn" type="submit" id="cpw-btn">更新密碼</button>
+        </form>
+      </div>`;
+    renderShell(bodyHtml);
+    document.getElementById("change-email-form").onsubmit = async (e) => {
+      e.preventDefault();
+      const email = document.getElementById("cem-email").value.trim();
+      const btn = document.getElementById("cem-btn");
+      btn.disabled = true; btn.textContent = "儲存中…";
+      try{
+        const { user } = await api("/api/me/email", { method:"POST", body: JSON.stringify({email}) });
+        setState({currentUser:user, error:"", notice:"信箱已更新", tab:"change-password"});
+      }catch(err){ setState({error: err.message, notice:""}); }
+    };
+    document.getElementById("change-pw-form").onsubmit = async (e) => {
+      e.preventDefault();
+      const currentPassword = document.getElementById("cpw-current").value;
+      const newPassword = document.getElementById("cpw-new").value;
+      const confirm = document.getElementById("cpw-confirm").value;
+      if(newPassword !== confirm){ setState({error:"兩次輸入的新密碼不一致", notice:""}); return; }
+      const btn = document.getElementById("cpw-btn");
+      btn.disabled = true; btn.textContent = "更新中…";
+      try{
+        const { user } = await api("/api/me/password", { method:"POST", body: JSON.stringify({currentPassword, newPassword}) });
+        setState({currentUser:user, error:"", notice:"密碼已更新", tab:"change-password"});
+      }catch(err){ setState({error: err.message, notice:""}); }
+    };
   }
 
   // check for an existing session on load (e.g. page refresh)
   (async function init(){
+    // 使用者是從忘記密碼信裡的連結點進來的（網址帶 ?resetToken=xxx），直接進重設密碼畫面，不用先登入
+    const urlParams = new URLSearchParams(location.search);
+    const resetToken = urlParams.get("resetToken");
+    if(resetToken){
+      state.view = "reset"; state.resetToken = resetToken;
+      render();
+      return;
+    }
     try{
       const { departments } = await api("/api/departments");
       DEPARTMENTS = departments || [];
     }catch(e){}
     try{
-      const { user } = await api("/api/me");
-      if(user){ state.view = "app"; state.currentUser = user; }
+      const { user, csrfToken } = await api("/api/me");
+      if(user){
+        CSRF_TOKEN = csrfToken;
+        state.view = "app"; state.currentUser = user;
+        state.tab = user.mustChangePassword ? "force-password" : "submit";
+      }
     }catch(e){}
     render();
   })();
